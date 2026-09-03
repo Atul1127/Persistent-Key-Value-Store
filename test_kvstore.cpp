@@ -1,6 +1,7 @@
 #include "kvstore.h"
 #include <cassert>
 #include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -9,6 +10,15 @@ static void clean(const char* path) {
     std::remove(path);
     std::string tmp = std::string(path) + ".compact";
     std::remove(tmp.c_str());
+}
+
+static void writeUint32(std::ofstream& out, uint32_t value) {
+    char buf[4];
+    buf[0] = static_cast<char>(value & 0xFF);
+    buf[1] = static_cast<char>((value >> 8) & 0xFF);
+    buf[2] = static_cast<char>((value >> 16) & 0xFF);
+    buf[3] = static_cast<char>((value >> 24) & 0xFF);
+    out.write(buf, 4);
 }
 
 int main() {
@@ -42,6 +52,29 @@ int main() {
         assert(store.get("empty", out) && out.empty());
         store.set("a", "1");
         store.set("b", "2");
+    }
+
+    // A truncated final record is discarded during recovery.
+    uint64_t valid_size;
+    {
+        KVStore store(path);
+        valid_size = store.fileSize();
+    }
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        assert(out);
+        writeUint32(out, 3);     // key size
+        writeUint32(out, 100);   // value size, but only part of it is written
+        out.write("bad", 3);
+        out.write("partial", 7);
+    }
+    {
+        KVStore store(path);
+        std::string out;
+        assert(store.get("a", out) && out == "1");
+        assert(store.get("b", out) && out == "2");
+        assert(!store.get("bad", out));
+        assert(store.fileSize() == valid_size);
     }
 
     // Compaction preserves live data and removes obsolete records.
