@@ -63,10 +63,18 @@ void KVStore::recover() {
         } else {
             const std::streamoff value_offset = file_.tellg();
             if (value_offset < 0) break;
-            file_.seekg(static_cast<std::streamoff>(value_size), std::ios::cur);
-            if (!file_) break;
+
+            // Verify that the complete value exists before indexing the record.
+            file_.seekg(0, std::ios::end);
+            const std::streamoff file_end = file_.tellg();
+            if (file_end < value_offset ||
+                static_cast<uint64_t>(file_end - value_offset) < value_size) {
+                break;
+            }
+
             index_[key] = IndexEntry{static_cast<uint64_t>(value_offset), value_size};
-            last_valid_end = file_.tellg();
+            last_valid_end = value_offset + static_cast<std::streamoff>(value_size);
+            file_.seekg(last_valid_end, std::ios::beg);
         }
     }
 
