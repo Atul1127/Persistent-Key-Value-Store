@@ -1,6 +1,6 @@
 <div align="center">
 
-# bitcask-kv
+# Persistent Key-Value Store in C++
 
 ### A small persistent key-value store written from scratch in C++
 
@@ -13,7 +13,7 @@ log compaction, a multithreaded TCP server, and a simple benchmark.
 
 ## What it is
 
-`bitcask-kv` is a learning project that demonstrates how a basic persistent key-value
+`Persistent-Key-Value-Store` is a learning project that demonstrates how a basic persistent key-value
 store can be built without a database library or framework.
 
 Every write is appended to a log, while an in-memory hash index maps each key to the
@@ -100,7 +100,7 @@ compacted: ... bytes -> ... bytes
 ## Project structure
 
 ```text
-bitcask-kv/
+Persistent-Key-Value-Store/
 ├── kvstore.h          # KVStore interface and index definition
 ├── kvstore.cpp        # storage engine, recovery, and compaction
 ├── main.cpp           # local interactive REPL
