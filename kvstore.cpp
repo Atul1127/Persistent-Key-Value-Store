@@ -75,6 +75,7 @@ void KVStore::recover() {
     file_.close();
     std::error_code ec;
     std::filesystem::resize_file(path_, static_cast<uintmax_t>(last_valid_end), ec);
+    if (ec) throw std::runtime_error("cannot repair data file: " + ec.message());
     file_.open(path_, std::ios::in | std::ios::out | std::ios::binary);
     if (!file_.is_open()) throw std::runtime_error("cannot reopen data file");
 }
@@ -171,6 +172,16 @@ void KVStore::compact() {
     file_.close();
     std::error_code ec;
     fs::rename(tmp_path, path_, ec);
+    if (ec) {
+        // Windows does not replace an existing destination with rename().
+        std::error_code remove_ec;
+        fs::remove(path_, remove_ec);
+        if (remove_ec) {
+            file_.open(path_, std::ios::in | std::ios::out | std::ios::binary);
+            throw std::runtime_error("compaction replace failed: " + remove_ec.message());
+        }
+        fs::rename(tmp_path, path_, ec);
+    }
     if (ec) {
         file_.open(path_, std::ios::in | std::ios::out | std::ios::binary);
         throw std::runtime_error("compaction rename failed: " + ec.message());
