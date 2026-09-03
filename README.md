@@ -1,6 +1,6 @@
 <div align="center">
 
-# bitcask-kv
+# Persistent Key-Value Store in C++
 
 ### A small persistent key-value store written from scratch in C++
 
@@ -14,7 +14,7 @@ library or framework.
 
 ## What it is
 
-`bitcask-kv` is a small key-value database built to understand how storage engines work.
+`Persistent-Key-Value-Store` is a small key-value database built to understand how storage engines work.
 Every write is appended to a log file, while an in-memory hash index maps each key to the
 offset and size of its latest value. Reads use the index to jump directly to the value.
 
@@ -132,7 +132,7 @@ The development server listens on `127.0.0.1:6380`, so it is intended for local 
 ## Project structure
 
 ```text
-bitcask-kv/
+Persistent-Key-Value-Store/
 ├── kvstore.h      # KVStore interface and in-memory index
 ├── kvstore.cpp    # storage engine implementation
 ├── main.cpp       # local interactive REPL
