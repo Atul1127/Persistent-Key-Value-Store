@@ -1,0 +1,20 @@
+# Build outputs
+kvstore
+server
+bench
+test_kvstore
+*.exe
+*.out
+
+# Local database files
+*.db
+*.compact
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db

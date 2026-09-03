@@ -4,9 +4,8 @@
 
 ### A small persistent key-value store written from scratch in C++
 
-An educational append-only storage engine based on the **Bitcask** model, with startup
-recovery, log compaction, and a multithreaded TCP server — built without a database
-library or framework.
+An educational append-only storage engine (the **Bitcask** model) with recovery,
+log compaction, a multithreaded TCP server, and a simple benchmark.
 
 </div>
 
@@ -14,100 +13,48 @@ library or framework.
 
 ## What it is
 
-`Persistent-Key-Value-Store` is a small key-value database built to understand how storage engines work.
-Every write is appended to a log file, while an in-memory hash index maps each key to the
-offset and size of its latest value. Reads use the index to jump directly to the value.
+`Persistent-Key-Value-Store` is a learning project that demonstrates how a basic persistent key-value
+store can be built without a database library or framework.
+
+Every write is appended to a log, while an in-memory hash index maps each key to the
+offset and size of its latest value. `GET` uses the index to locate the value directly.
+Deletes are represented by tombstone records.
 
 ```text
-   client ──TCP──▶ server ──▶ KVStore
-                                 │
-              in-memory index:  key ──▶ (file offset, size)
-                                 │
-              on-disk log:  [..][key3=v][key1=v'][key2=TOMBSTONE][key1=v'']
-                              (append-only — newest record for a key wins)
+client ──TCP──▶ server ──▶ KVStore
+                         │
+                  in-memory index
+                         │
+                    append-only log
 ```
 
 ## Features
 
-- Append-only log with length-prefixed records
+- Append-only binary log
 - In-memory `unordered_map` index
-- Persistent data across normal restarts
-- Recovery that rebuilds the index from the log
-- Safe handling of a partially written final record
-- Key/value size limits and write-error checking
-- Tombstones for deletes
+- `SET`, `GET`, and `DEL`
+- Startup recovery by replaying the log
+- Protection against oversized/corrupt record lengths during recovery
+- Truncated final-record recovery after an interrupted write
 - Manual log compaction
-- Multithreaded TCP server
-- Simple Python client
-- Local interactive CLI
-- Basic write/read/recovery benchmark
+- Multithreaded TCP server using `std::thread`
+- Mutex-protected shared storage engine
+- Basic request validation and a 1 MB network request limit
+- Simple correctness test suite
+- Benchmark for writes, reads, and recovery
 
-## Benchmarks
-
-Example results from a Windows machine (MinGW g++ 15.2, `-O2`, 50,000 keys):
-
-| Operation | Throughput | Latency |
-|---|---:|---:|
-| Write | ~99,000 ops/sec | ~10 µs/op |
-| Read | ~241,000 ops/sec | ~4 µs/op |
-| Recovery | 50k keys in ~234 ms | — |
-
-These numbers are machine-dependent and are included as an example rather than a
-production performance claim. Run the benchmark yourself with different dataset sizes.
-
-```bash
-./bench 200000
-```
-
-## How it works
-
-### 1. Append-only storage
-
-A `SET` never overwrites an existing value. It appends:
+## On-disk format
 
 ```text
-[ key_size : 4 bytes ][ value_size : 4 bytes ][ key ][ value ]
+[ key_size : 4 bytes ][ value_size : 4 bytes ][ key bytes ][ value bytes ]
 ```
 
-The index stores:
+`value_size = 0xFFFFFFFF` represents a tombstone, so no value bytes follow a delete
+record. Keys and values have practical size limits to keep recovery and requests bounded.
 
-```text
-key -> (value offset, value size)
-```
+## Build and run
 
-### 2. Recovery
-
-When the store starts, it scans the log from the beginning and reconstructs the index.
-The newest record for a key wins. If the last record is incomplete, the incomplete suffix
-is discarded and the valid prefix is retained.
-
-### 3. Delete
-
-`DEL` appends a record whose `value_size` is `0xFFFFFFFF`. This is a tombstone, so the
-key is removed from the live in-memory index.
-
-### 4. Compaction
-
-Repeated updates leave old records behind. `COMPACT` copies only currently live values
-to a new file and replaces the old file, reducing wasted space.
-
-### 5. Networking
-
-The TCP server accepts commands such as:
-
-```text
-SET city Ludhiana
-GET city
-DEL city
-COMPACT
-```
-
-Each client is handled by a separate thread, while the KVStore mutex protects the shared
-file and index.
-
-## Build & run
-
-Requires a C++17 compiler (g++/MinGW on Windows, g++/clang on Linux/Mac).
+Requires a C++17 compiler.
 
 ```bash
 # Local interactive store
@@ -115,60 +62,69 @@ g++ -std=c++17 -O2 main.cpp kvstore.cpp -o kvstore
 ./kvstore
 
 # Network server
-# Windows: add -lws2_32 at the end
+# Windows: add -lws2_32 at the end of the command
 g++ -std=c++17 -O2 -pthread server.cpp kvstore.cpp -o server
 ./server
 
-# Python client (another terminal)
+# Python client (in another terminal)
 python client.py
+
+# Correctness tests
+g++ -std=c++17 -O2 test_kvstore.cpp kvstore.cpp -o test_kvstore
+./test_kvstore
 
 # Benchmark
 g++ -std=c++17 -O2 bench.cpp kvstore.cpp -o bench
-./bench 200000
+./bench 50000
 ```
 
-The development server listens on `127.0.0.1:6380`, so it is intended for local use.
+## Example
+
+```text
+> set city Ludhiana
+OK
+> get city
+Ludhiana
+> set city Kolkata
+OK
+> get city
+Kolkata
+> del city
+OK
+> get city
+(nil)
+> compact
+compacted: ... bytes -> ... bytes
+```
 
 ## Project structure
 
 ```text
 Persistent-Key-Value-Store/
-├── kvstore.h      # KVStore interface and in-memory index
-├── kvstore.cpp    # storage engine implementation
-├── main.cpp       # local interactive REPL
-├── server.cpp     # multithreaded TCP server
-├── client.py      # Python TCP client
-└── bench.cpp      # benchmark harness
+├── kvstore.h          # KVStore interface and index definition
+├── kvstore.cpp        # storage engine, recovery, and compaction
+├── main.cpp           # local interactive REPL
+├── server.cpp         # multithreaded TCP server
+├── client.py          # simple network client
+├── test_kvstore.cpp   # correctness tests
+└── bench.cpp          # benchmark harness
 ```
 
 ## Limitations
 
-This is a **fresher/learning project**, not a production database.
+This is intentionally a **fresher-level systems project**, not a production database.
 
-- Entire key index lives in memory
-- Single node and single active data file
-- Manual compaction
-- Simple text protocol
-- No authentication or encryption
-- No replication or sharding
-- No automated test suite yet
-- Durability is limited by normal file flushing rather than an explicit `fsync` policy
+- Entire key index stays in memory.
+- Single node and single data file.
+- Manual compaction.
+- No replication, authentication, encryption, or clustering.
+- Default persistence uses `flush()` rather than a power-loss durability guarantee.
+- The simple text protocol is intended for learning and local experimentation.
 
-These limitations are intentional so the project stays small enough to understand while
-still demonstrating storage, persistence, recovery, concurrency, networking, and
-performance concepts.
+## What the project demonstrates
 
-## Possible future improvements
+The main learning goals are storage-engine fundamentals, file I/O, binary record formats,
+hash indexing, recovery, compaction, socket programming, and basic multithreading.
 
-- Add unit/integration tests
-- Add automatic background compaction
-- Add a read/write lock for higher read concurrency
-- Add checksums for stronger corruption detection
-- Add a more structured network protocol
-- Explore an LSM-tree/SSTable design as a separate advanced stage
-
----
-
-<div align="center">
-Built from scratch: append-only storage → recovery → compaction → concurrent TCP server.
-</div>
+Future work can include automatic compaction, a read/write lock, TTLs, or an LSM-tree,
+but they are intentionally outside the scope of this small project.

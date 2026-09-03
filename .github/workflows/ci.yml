@@ -1,0 +1,28 @@
+name: C++ CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build KV store
+        run: g++ -std=c++17 -O2 main.cpp kvstore.cpp -o kvstore
+
+      - name: Build server
+        run: g++ -std=c++17 -O2 -pthread server.cpp kvstore.cpp -o server
+
+      - name: Build tests
+        run: g++ -std=c++17 -O2 test_kvstore.cpp kvstore.cpp -o test_kvstore
+
+      - name: Run tests
+        run: ./test_kvstore
+
+      - name: Build benchmark
+        run: g++ -std=c++17 -O2 bench.cpp kvstore.cpp -o bench
