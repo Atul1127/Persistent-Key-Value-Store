@@ -1,28 +1,14 @@
-// server.cpp — Stage 4: turn the KV store into a network server.
-//
-// Instead of typing commands into the program, this version LISTENS on a TCP
-// port. Other programs (or you, via a tool like telnet / netcat / a Python
-// script) connect over the network and send the same commands:
-//     SET <key> <value>
-//     GET <key>
-//     DEL <key>
-//     COMPACT
-// Each connected client gets its own thread, so many clients are served at once.
-//
-// This file is cross-platform: it uses Winsock on Windows and BSD sockets on
-// Linux/Mac. The #ifdef blocks pick the right one automatically.
-
 #include "kvstore.h"
 #include <iostream>
 #include <string>
 #include <sstream>
 #include <thread>
-#include <cstring>
+#include <stdexcept>
 
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
-  typedef SOCKET socket_t;                 // Windows socket handle type
+  typedef SOCKET socket_t;
   #define CLOSESOCK closesocket
   #define BAD_SOCKET INVALID_SOCKET
 #else
@@ -30,64 +16,84 @@
   #include <netinet/in.h>
   #include <arpa/inet.h>
   #include <unistd.h>
-  typedef int socket_t;                    // on Linux/Mac a socket is just an int
+  typedef int socket_t;
   #define CLOSESOCK close
   #define BAD_SOCKET (-1)
 #endif
 
-static const int PORT = 6380; // the port clients connect to (Redis uses 6379)
+static const int PORT = 6380;
+static const size_t MAX_REQUEST_SIZE = 1024 * 1024;
 
-// Handle ONE connected client, start to finish, on its own thread.
-// `store` is shared by all clients — the KVStore's internal mutex keeps it safe.
+static bool sendAll(socket_t socket, const std::string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        int n = send(socket, data.data() + sent,
+                     static_cast<int>(data.size() - sent), 0);
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
 void handleClient(socket_t client, KVStore* store) {
-    std::string buffer;            // accumulates bytes until we have a full line
+    std::string buffer;
     char chunk[1024];
 
     while (true) {
         int n = recv(client, chunk, sizeof(chunk), 0);
-        if (n <= 0) break;         // client disconnected or error -> done
+        if (n <= 0) break;
         buffer.append(chunk, n);
+        if (buffer.size() > MAX_REQUEST_SIZE) {
+            sendAll(client, "ERR request too large\n");
+            break;
+        }
 
-        // TCP is a stream, not neat lines. So we pull out one complete line
-        // (everything up to a '\n') at a time and process it.
         size_t nl;
         while ((nl = buffer.find('\n')) != std::string::npos) {
             std::string line = buffer.substr(0, nl);
             buffer.erase(0, nl + 1);
-            if (!line.empty() && line.back() == '\r') line.pop_back(); // Windows CRLF
+            if (!line.empty() && line.back() == '\r') line.pop_back();
 
             std::istringstream iss(line);
             std::string cmd;
             iss >> cmd;
-
             std::string reply;
-            if (cmd == "SET" || cmd == "set") {
-                std::string key, value;
-                iss >> key;
-                std::getline(iss, value);
-                if (!value.empty() && value[0] == ' ') value.erase(0, 1);
-                store->set(key, value);
-                reply = "OK\n";
-            } else if (cmd == "GET" || cmd == "get") {
-                std::string key, out;
-                iss >> key;
-                reply = store->get(key, out) ? out + "\n" : "(nil)\n";
-            } else if (cmd == "DEL" || cmd == "del") {
-                std::string key;
-                iss >> key;
-                store->del(key);
-                reply = "OK\n";
-            } else if (cmd == "COMPACT" || cmd == "compact") {
-                store->compact();
-                reply = "OK\n";
-            } else if (cmd == "QUIT" || cmd == "quit") {
-                CLOSESOCK(client);
-                return;
-            } else if (!cmd.empty()) {
-                reply = "ERR unknown command\n";
+
+            try {
+                if (cmd == "SET" || cmd == "set") {
+                    std::string key, value;
+                    if (!(iss >> key)) reply = "ERR missing key\n";
+                    else {
+                        std::getline(iss, value);
+                        if (!value.empty() && value[0] == ' ') value.erase(0, 1);
+                        store->set(key, value);
+                        reply = "OK\n";
+                    }
+                } else if (cmd == "GET" || cmd == "get") {
+                    std::string key, out;
+                    if (!(iss >> key)) reply = "ERR missing key\n";
+                    else reply = store->get(key, out) ? out + "\n" : "(nil)\n";
+                } else if (cmd == "DEL" || cmd == "del") {
+                    std::string key;
+                    if (!(iss >> key)) reply = "ERR missing key\n";
+                    else { store->del(key); reply = "OK\n"; }
+                } else if (cmd == "COMPACT" || cmd == "compact") {
+                    store->compact();
+                    reply = "OK\n";
+                } else if (cmd == "QUIT" || cmd == "quit") {
+                    CLOSESOCK(client);
+                    return;
+                } else if (!cmd.empty()) {
+                    reply = "ERR unknown command\n";
+                }
+            } catch (const std::exception& e) {
+                reply = std::string("ERR ") + e.what() + "\n";
             }
 
-            if (!reply.empty()) send(client, reply.data(), (int)reply.size(), 0);
+            if (!reply.empty() && !sendAll(client, reply)) {
+                CLOSESOCK(client);
+                return;
+            }
         }
     }
     CLOSESOCK(client);
@@ -96,41 +102,39 @@ void handleClient(socket_t client, KVStore* store) {
 int main() {
 #ifdef _WIN32
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa); // Windows requires starting up the network library
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
 #endif
 
-    KVStore store("data.db"); // same store, same file — recovers on startup as before
-
-    // 1. Create a listening socket.
+    KVStore store("data.db");
     socket_t server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server == BAD_SOCKET) { std::cerr << "socket() failed\n"; return 1; }
+    if (server == BAD_SOCKET) return 1;
 
-    // Allow quick restart on the same port (avoids "address in use").
     int yes = 1;
     setsockopt(server, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
 
-    // 2. Bind it to our port on all network interfaces.
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(PORT);
     if (bind(server, (sockaddr*)&addr, sizeof(addr)) != 0) {
-        std::cerr << "bind() failed on port " << PORT << "\n"; return 1;
+        CLOSESOCK(server);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 1;
+    }
+    if (listen(server, 16) != 0) {
+        CLOSESOCK(server);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 1;
     }
 
-    // 3. Start listening for connections.
-    listen(server, 16);
-    std::cout << "kvstore server (stage 4) listening on port " << PORT << std::endl;
-
-    // 4. Accept clients forever; hand each one to its own thread.
+    std::cout << "kvstore server listening on localhost:" << PORT << std::endl;
     while (true) {
         socket_t client = accept(server, nullptr, nullptr);
         if (client == BAD_SOCKET) continue;
         std::thread(handleClient, client, &store).detach();
     }
-
-#ifdef _WIN32
-    WSACleanup();
-#endif
-    return 0;
 }
