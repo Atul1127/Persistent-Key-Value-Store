@@ -12,8 +12,20 @@ while True:
         break
     if not line:
         continue
-    s.sendall((line + "\n").encode())     # send the command
-    reply = s.recv(4096).decode().strip()  # read the server's reply
+
+    s.sendall((line + "\n").encode())
+
+    # The server sends one newline-terminated response per command.
+    chunks = []
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+
+    reply = b"".join(chunks).decode(errors="replace").strip()
     print(reply)
 
 s.close()
